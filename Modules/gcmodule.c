@@ -24,6 +24,7 @@
 */
 
 #include "Python.h"
+#include "object.h"
 #include "pycore_context.h"
 #include "pycore_initconfig.h"
 #include "pycore_interp.h"      // PyInterpreterState.gc
@@ -2353,11 +2354,16 @@ _PyObject_GC_Resize(PyVarObject *op, Py_ssize_t nitems)
         return (PyVarObject *)PyErr_NoMemory();
     }
 
+    long old_refcnt = op->ob_base.ob_refcnt;
+    state_change(op, 0, 0, op->ob_base.ob_type->tp_name,
+                 _Py_GetGlobalRefTotal());
     PyGC_Head *g = AS_GC(op);
-    g = (PyGC_Head *)PyObject_Realloc(g,  sizeof(PyGC_Head) + basicsize);
+    g = (PyGC_Head *)PyObject_Realloc(g, sizeof(PyGC_Head) + basicsize);
     if (g == NULL)
         return (PyVarObject *)PyErr_NoMemory();
-    op = (PyVarObject *) FROM_GC(g);
+    op = (PyVarObject *)FROM_GC(g);
+    state_change(op, old_refcnt, 0, op->ob_base.ob_type->tp_name,
+                 _Py_GetGlobalRefTotal());
     Py_SET_SIZE(op, nitems);
     return op;
 }

@@ -1,9 +1,16 @@
 #ifndef Py_OBJECT_H
 #define Py_OBJECT_H
+#include "pytypedefs.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+extern long _Py_GetGlobalRefTotal(void);
+extern void state_change(void *ptr, long rc, long diff, const char *type,
+                         long current_total_ref);
+extern void store_state();
+extern void check_with_stored_state();
+extern const char* get_type_name(PyTypeObject* type);
 
 /* Object and type object interface */
 
@@ -162,6 +169,7 @@ static inline int Py_IS_TYPE(PyObject *ob, PyTypeObject *type) {
 
 
 static inline void Py_SET_REFCNT(PyObject *ob, Py_ssize_t refcnt) {
+    state_change(ob, refcnt, 0, get_type_name(ob->ob_type), _Py_GetGlobalRefTotal());
     ob->ob_refcnt = refcnt;
 }
 #if !defined(Py_LIMITED_API) || Py_LIMITED_API+0 < 0x030b0000
@@ -535,6 +543,7 @@ static inline void Py_INCREF(PyObject *op)
     // directly PyObject.ob_refcnt.
 #ifdef Py_REF_DEBUG
     _Py_INC_REFTOTAL();
+    state_change(op, op->ob_refcnt + 1, +1, get_type_name(op->ob_type), _Py_GetGlobalRefTotal());
 #endif  // Py_REF_DEBUG
     op->ob_refcnt++;
 #endif
@@ -555,6 +564,7 @@ static inline void Py_DECREF(const char *filename, int lineno, PyObject *op)
 {
     _Py_DECREF_STAT_INC();
     _Py_DEC_REFTOTAL();
+    state_change(op, op->ob_refcnt - 1, -1, get_type_name(op->ob_type), _Py_GetGlobalRefTotal());
     if (--op->ob_refcnt != 0) {
         if (op->ob_refcnt < 0) {
             _Py_NegativeRefcount(filename, lineno, op);

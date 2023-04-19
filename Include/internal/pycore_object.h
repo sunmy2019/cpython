@@ -56,6 +56,7 @@ static inline void _Py_RefcntAdd(PyObject* op, Py_ssize_t n)
 {
 #ifdef Py_REF_DEBUG
     _Py_AddRefTotal(_PyInterpreterState_GET(), n);
+    state_change(op, op->ob_refcnt + n, +n, get_type_name(op->ob_type), _Py_GetGlobalRefTotal());
 #endif
     op->ob_refcnt += n;
 }
@@ -65,8 +66,9 @@ static inline void
 _Py_DECREF_SPECIALIZED(PyObject *op, const destructor destruct)
 {
     _Py_DECREF_STAT_INC();
-#ifdef Py_REF_DEBUG
+#ifdef Py_REF_DEBUG 
     _Py_DEC_REFTOTAL(_PyInterpreterState_GET());
+    state_change(op, op->ob_refcnt - 1, -1, get_type_name(op->ob_type), _Py_GetGlobalRefTotal());
 #endif
     if (--op->ob_refcnt != 0) {
         assert(op->ob_refcnt > 0);
@@ -85,6 +87,7 @@ _Py_DECREF_NO_DEALLOC(PyObject *op)
     _Py_DECREF_STAT_INC();
 #ifdef Py_REF_DEBUG
     _Py_DEC_REFTOTAL(_PyInterpreterState_GET());
+    state_change(op, op->ob_refcnt - 1, -1, get_type_name(op->ob_type), _Py_GetGlobalRefTotal());
 #endif
     op->ob_refcnt--;
 #ifdef Py_DEBUG
