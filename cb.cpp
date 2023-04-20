@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <map>
 #include <set>
+#include <string.h>
 #include <string>
 #include <vector>
 
@@ -42,15 +43,24 @@ extern void state_change(void *ptr, long rc, long diff, const char *type,
   if (diff && current[ptr] && current[ptr] + diff != rc) {
     fprintf(stderr, "unexpected ref count change of %p: %ld, %ld -> %ld\n", ptr,
             diff, current[ptr], rc);
-    if (rc < 1000000) // immortal
+    if (rc < 1000000) // not immortal
       breakpoint();
   }
 
   if (rc != 0) {
     current[ptr] = rc;
-    type_map[ptr] = type;
+    // store type name early, so that we can print something when unexpected
+    // things happen
+    if (type)
+      type_map[ptr] = type;
     return;
   }
+
+  if (type)
+    type_map[ptr] = type;
+  else if (type_map[ptr].size() == 0)
+    type_map[ptr] =
+        "__UNKNOWN__"; // handles the case when PyObject is uninitialized
 
   if (stored[ptr])
     flushed.emplace_back(-stored[ptr], ptr, type_map[ptr]);

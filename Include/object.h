@@ -169,7 +169,7 @@ static inline int Py_IS_TYPE(PyObject *ob, PyTypeObject *type) {
 
 
 static inline void Py_SET_REFCNT(PyObject *ob, Py_ssize_t refcnt) {
-    state_change(ob, refcnt, 0, get_type_name(ob->ob_type), _Py_GetGlobalRefTotal());
+    state_change(ob, refcnt, 0, 0, _Py_GetGlobalRefTotal());
     ob->ob_refcnt = refcnt;
 }
 #if !defined(Py_LIMITED_API) || Py_LIMITED_API+0 < 0x030b0000
