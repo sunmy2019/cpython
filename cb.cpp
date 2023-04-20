@@ -26,9 +26,10 @@ extern void state_change(void *ptr, long rc, long diff, const char *type,
 extern void store_state();
 extern void check_with_stored_state();
 
+const char *get_type_name(void *ptr) { return type_map[ptr].c_str(); }
+
 extern void state_change(void *ptr, long rc, long diff, const char *type,
                          long current_total_ref) {
-
   total_ref += diff;
   if (total_ref != current_total_ref) {
     fprintf(stderr, "unexpected total ref. here: %ld (%+ld) there %ld\n",
@@ -41,8 +42,10 @@ extern void state_change(void *ptr, long rc, long diff, const char *type,
     return;
 
   if (diff && current[ptr] && current[ptr] + diff != rc) {
-    fprintf(stderr, "unexpected ref count change of %p: %ld, %ld -> %ld\n", ptr,
-            diff, current[ptr], rc);
+    fprintf(stderr,
+            "unexpected ref count change of %p: %ld, (%s)%ld -> (%s)%ld,\n",
+            ptr, diff, type_map[ptr].c_str(), current[ptr],
+            type ? type : "__UNKNOWN__", rc);
     if (rc < 1000000) // not immortal
       breakpoint();
   }
@@ -110,16 +113,16 @@ extern void check_with_stored_state() {
     return;
 
   for (auto i : diff)
-    fprintf(stderr, "ref change of living %p (%s): %ld,  %ld -> %ld\n", i,
+    fprintf(stderr, "ref change of living %p (%s): %+ld,  %ld -> %ld\n", i,
             type_map[i].c_str(), current[i] - stored[i], stored[i], current[i]);
 
   for (auto state : flushed)
-    fprintf(stderr, "ref change of died   %p (%s): %ld\n", state.original_ptr,
+    fprintf(stderr, "ref change of died   %p (%s): %+ld\n", state.original_ptr,
             state.type.c_str(), state.ref_cnt_diff);
 
   for (auto i : typed_diff)
-    fprintf(stderr, "ref change of type %s: %ld\n", i.first.c_str(), i.second);
+    fprintf(stderr, "ref change of type %s: %+ld\n", i.first.c_str(), i.second);
 
-  fprintf(stderr, "total ref change %ld\n", rc_change);
+  fprintf(stderr, "total ref change %+ld\n", rc_change);
 }
 }

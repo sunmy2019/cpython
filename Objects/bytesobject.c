@@ -3065,7 +3065,7 @@ _PyBytes_Resize(PyObject **pv, Py_ssize_t newsize)
 #endif
     
     long old_refcnt = v->ob_refcnt;
-    state_change(v, 0, 0, "PyDictKeysObject", _Py_GetGlobalRefTotal());
+    state_change(v, 0, 0, "bytes", _Py_GetGlobalRefTotal());
 
     *pv = (PyObject *)
         PyObject_Realloc(v, PyBytesObject_SIZE + newsize);
@@ -3077,7 +3077,7 @@ _PyBytes_Resize(PyObject **pv, Py_ssize_t newsize)
         PyErr_NoMemory();
         return -1;
     }
-    state_change(pv, old_refcnt, 0, "PyDictKeysObject", _Py_GetGlobalRefTotal());
+    state_change(*pv, old_refcnt, 0, "bytes", _Py_GetGlobalRefTotal());
 
     _Py_NewReferenceNoTotal(*pv);
     sv = (PyBytesObject *) *pv;
