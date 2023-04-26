@@ -253,7 +253,7 @@ static inline void Py_SET_REFCNT(PyObject *ob, Py_ssize_t refcnt) {
     // of an immortalized object.
     if (_Py_IsImmortal(ob)) {
         return;
-    } 
+    }
     state_change(ob, refcnt, 0, 0, _Py_GetGlobalRefTotal());
     ob->ob_refcnt = refcnt;
 }

@@ -1,17 +1,18 @@
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <map>
 #include <set>
-#include <string.h>
 #include <string>
 #include <vector>
 
 static std::map<void *, long> current;
 static std::map<void *, long> stored;
 static std::map<void *, std::string> type_map;
+static std::set<void *> immortals;
 
 struct State {
-  State(long diff, void *ptr, std::string type)
+  State(long diff, void *ptr, const std::string &type)
       : ref_cnt_diff(diff), original_ptr(ptr), type(type) {}
   long ref_cnt_diff;
   void *original_ptr;
@@ -40,16 +41,22 @@ extern void state_change(void *ptr, long rc, long diff, const char *type,
     breakpoint();
   }
 
-  if (rc < 0)
+  // do not check all immortal objects for ease
+  if (rc < 0 || immortals.count(ptr))
     return;
+
+  static_assert(sizeof(void *) > 4, "This library does not handle this case");
+  if (rc >= UINT32_MAX) {
+    immortals.insert(ptr);
+    return;
+  }
 
   if (diff && current[ptr] && current[ptr] + diff != rc) {
     fprintf(stderr,
             "unexpected ref count change of %p: %ld, (%s)%ld -> (%s)%ld,\n",
             ptr, diff, type_map[ptr].c_str(), current[ptr],
             type ? type : "__UNKNOWN__", rc);
-    if (rc < 1000000) // not immortal
-      breakpoint();
+    breakpoint();
   }
 
   if (rc != 0) {

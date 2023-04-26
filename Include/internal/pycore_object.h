@@ -70,6 +70,7 @@ static inline void _Py_SetImmortal(PyObject *op)
 {
     if (op) {
         op->ob_refcnt = _Py_IMMORTAL_REFCNT;
+        state_change(op, _Py_IMMORTAL_REFCNT, 0, get_type_name(op->ob_type), _Py_GetGlobalRefTotal());
     }
 }
 #define _Py_SetImmortal(op) _Py_SetImmortal(_PyObject_CAST(op))

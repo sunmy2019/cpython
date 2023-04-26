@@ -14649,6 +14649,10 @@ _PyUnicode_InternInPlace(PyInterpreterState *interp, PyObject **p)
     for (Py_ssize_t i = 0; i < Py_REFCNT(s) - 2; i++) {
         _Py_DecRefTotal(_PyInterpreterState_GET());
     }
+    if (s->ob_refcnt >= 2) {
+        state_change(s, 2, 2 - s->ob_refcnt, s->ob_type->tp_name,
+                     _Py_GetGlobalRefTotal());
+    }
 #endif
     _Py_SetImmortal(s);
     _PyUnicode_STATE(*p).interned = SSTATE_INTERNED_IMMORTAL;
