@@ -11,6 +11,8 @@ static std::map<void *, long> stored;
 static std::map<void *, std::string> type_map;
 
 struct State {
+  State(long diff, void *ptr, std::string type)
+      : ref_cnt_diff(diff), original_ptr(ptr), type(type) {}
   long ref_cnt_diff;
   void *original_ptr;
   std::string type;
