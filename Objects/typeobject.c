@@ -1490,6 +1490,34 @@ type_set_annotations(PyTypeObject *type, PyObject *value, void *context)
     return result;
 }
 
+static PyObject *
+type_get_type_params(PyTypeObject *type, void *context)
+{
+    PyObject *params = PyDict_GetItem(lookup_tp_dict(type), &_Py_ID(__type_params__));
+
+    if (params) {
+        return Py_NewRef(params);
+    }
+
+    return PyTuple_New(0);
+}
+
+static int
+type_set_type_params(PyTypeObject *type, PyObject *value, void *context)
+{
+    if (!check_set_special_type_attr(type, value, "__type_params__")) {
+        return -1;
+    }
+
+    PyObject *dict = lookup_tp_dict(type);
+    int result = PyDict_SetItem(dict, &_Py_ID(__type_params__), value);
+
+    if (result == 0) {
+        PyType_Modified(type);
+    }
+    return result;
+}
+
 
 /*[clinic input]
 type.__instancecheck__ -> bool
@@ -1536,6 +1564,7 @@ static PyGetSetDef type_getsets[] = {
     {"__doc__", (getter)type_get_doc, (setter)type_set_doc, NULL},
     {"__text_signature__", (getter)type_get_text_signature, NULL, NULL},
     {"__annotations__", (getter)type_get_annotations, (setter)type_set_annotations, NULL},
+    {"__type_params__", (getter)type_get_type_params, (setter)type_set_type_params, NULL},
     {0}
 };
 
@@ -3129,11 +3158,12 @@ type_new_copy_slots(type_new_ctx *ctx, PyObject *dict)
             goto error;
         }
         if (r > 0) {
-            /* CPython inserts __qualname__ and __classcell__ (when needed)
+            /* CPython inserts these names (when needed)
                into the namespace when creating a class.  They will be deleted
                below so won't act as class variables. */
             if (!_PyUnicode_Equal(slot, &_Py_ID(__qualname__)) &&
-                !_PyUnicode_Equal(slot, &_Py_ID(__classcell__)))
+                !_PyUnicode_Equal(slot, &_Py_ID(__classcell__)) &&
+                !_PyUnicode_Equal(slot, &_Py_ID(__classdictcell__)))
             {
                 PyErr_Format(PyExc_ValueError,
                              "%R in __slots__ conflicts with class variable",
@@ -3584,6 +3614,32 @@ type_new_set_classcell(PyTypeObject *type)
     return 0;
 }
 
+static int
+type_new_set_classdictcell(PyTypeObject *type)
+{
+    PyObject *dict = lookup_tp_dict(type);
+    PyObject *cell = PyDict_GetItemWithError(dict, &_Py_ID(__classdictcell__));
+    if (cell == NULL) {
+        if (PyErr_Occurred()) {
+            return -1;
+        }
+        return 0;
+    }
+
+    /* At least one method requires a reference to the dict of its defining class */
+    if (!PyCell_Check(cell)) {
+        PyErr_Format(PyExc_TypeError,
+                     "__classdictcell__ must be a nonlocal cell, not %.200R",
+                     Py_TYPE(cell));
+        return -1;
+    }
+
+    (void)PyCell_Set(cell, (PyObject *)dict);
+    if (PyDict_DelItem(dict, &_Py_ID(__classdictcell__)) < 0) {
+        return -1;
+    }
+    return 0;
+}
 
 static int
 type_new_set_attrs(const type_new_ctx *ctx, PyTypeObject *type)
@@ -3626,6 +3682,9 @@ type_new_set_attrs(const type_new_ctx *ctx, PyTypeObject *type)
     type_new_set_slots(ctx, type);
 
     if (type_new_set_classcell(type) < 0) {
+        return -1;
+    }
+    if (type_new_set_classdictcell(type) < 0) {
         return -1;
     }
     return 0;
@@ -9368,7 +9427,7 @@ static pytype_slotdef slotdefs[] = {
             "__buffer__($self, flags, /)\n--\n\n"
             "Return a buffer object that exposes the underlying memory of the object."),
     BUFSLOT(__release_buffer__, bf_releasebuffer, slot_bf_releasebuffer, wrap_releasebuffer,
-            "__release_buffer__($self, /)\n--\n\n"
+            "__release_buffer__($self, buffer, /)\n--\n\n"
             "Release the buffer object that exposes the underlying memory of the object."),
 
     AMSLOT(__await__, am_await, slot_am_await, wrap_unaryfunc,
