@@ -8,8 +8,8 @@ extern "C" {
 extern long _Py_GetGlobalRefTotal(void);
 extern void state_change(void *ptr, long rc, long diff, const char *type,
                          long current_total_ref);
-extern void store_state();
-extern void check_with_stored_state();
+extern void store_state(void);
+extern void check_with_stored_state(void);
 extern const char* get_type_name(PyTypeObject* type);
 
 /* Object and type object interface */
