@@ -110,7 +110,7 @@ bytes(cdata)
 
 #include "pycore_call.h"          // _PyObject_CallNoArgs()
 #include "pycore_ceval.h"         // _Py_EnterRecursiveCall()
-#include "structmember.h"         // PyMemberDef
+
 
 #include <ffi.h>
 #ifdef MS_WIN32
@@ -2759,14 +2759,14 @@ PyCData_dealloc(PyObject *self)
 }
 
 static PyMemberDef PyCData_members[] = {
-    { "_b_base_", T_OBJECT,
-      offsetof(CDataObject, b_base), READONLY,
+    { "_b_base_", _Py_T_OBJECT,
+      offsetof(CDataObject, b_base), Py_READONLY,
       "the base object" },
-    { "_b_needsfree_", T_INT,
-      offsetof(CDataObject, b_needsfree), READONLY,
+    { "_b_needsfree_", Py_T_INT,
+      offsetof(CDataObject, b_needsfree), Py_READONLY,
       "whether the object owns the memory or not" },
-    { "_objects", T_OBJECT,
-      offsetof(CDataObject, b_objects), READONLY,
+    { "_objects", _Py_T_OBJECT,
+      offsetof(CDataObject, b_objects), Py_READONLY,
       "internal objects tree (NEVER CHANGE THIS OBJECT!)"},
     { NULL },
 };
@@ -5740,15 +5740,9 @@ _ctypes_add_objects(PyObject *mod)
 {
 #define MOD_ADD(name, expr) \
     do { \
-        PyObject *obj = (expr); \
-        if (obj == NULL) { \
+        if (PyModule_Add(mod, name, (expr)) < 0) { \
             return -1; \
         } \
-        if (PyModule_AddObjectRef(mod, name, obj) < 0) { \
-            Py_DECREF(obj); \
-            return -1; \
-        } \
-        Py_DECREF(obj); \
     } while (0)
 
     MOD_ADD("_pointer_type_cache", Py_NewRef(_ctypes_ptrtype_cache));
