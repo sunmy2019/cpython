@@ -17,6 +17,7 @@ The script re-runs each compilation command with:
     itself is required — only the target type-system changes)
   - -fplugin=<plugin.so> appended
   - -w to suppress normal warnings (we only want plugin output)
+  - -fsyntax-only appended (unless -c/-E/-S is already present)
   - output redirected to /dev/null; real object-file output suppressed
 
 Results are written to Tools/py-format-checker/reports/py_format_report[_<target>].txt
@@ -26,9 +27,15 @@ target triple is embedded in the default filename, e.g.
 
 Environment variables:
 
-- `PY_FMT_CHECK_SIGNEDNESS`: Default `1`. Set to `0` to disable strict signedness
-    checks for integer specifiers (e.g. treat `<int>` and `<uint>` with the same
-    width as equivalent). By default signedness is enforced.
+- `PY_FMT_ERROR_ONLY`: Default `1`. Set to `0` to print every checked call site,
+    not just those with errors (equivalent to --verbose).
+
+- `PY_FMT_INTEGRAL_CHECK_MODE`: Controls integer width/sign checking. Values:
+    - `off` — accept any integer type for integer specifiers; no
+      width or signedness check.
+    - `standard` (default) — bit-width must match the specifier (C99-style); signedness
+      is ignored (useful when the codebase freely mixes int/unsigned).
+    - `full` — both bit-width and signedness must match.
 """
 
 import argparse
@@ -46,12 +53,21 @@ PREFIX = "[py-fmt]"
 
 
 def reformat_output(raw_text: str) -> str:
-    """Add numbered headers and '---' separators to C++-formatted [py-fmt] blocks.
+    """Parse and reformat raw [py-fmt] plugin output into a human-readable report.
 
-    The plugin already emits structured lines (func:/loc:/fmt:/arg[N]/...);
-    this function strips the [py-fmt] sentinel prefix, splits into blocks
-    (each starting with a 'func:' line), prepends a 'Error N/M:' or
-    'Call site N/M:' header, and joins blocks with a '---' rule.
+    The plugin emits structured lines prefixed with '[py-fmt]'
+    (func:/loc:/fmt:/arg[N]/...).  This function:
+
+    1. Strips the '[py-fmt]' sentinel prefix and splits lines into blocks,
+       each starting with a 'func:' line.
+    2. Normalises 'loc:' paths by collapsing '../' segments and stripping
+       a leading './'.
+    3. Deduplicates blocks that share the same 'loc:' (keeps first occurrence).
+    4. Sorts blocks lexicographically by (file, line-number).
+    5. Filters out intentional UNKNOWN_SPEC blocks from exception-listed test
+       files (see is_ignorable_test_unknown).
+    6. Prepends an 'Error N/M:' or 'Call site N/M:' header to each block and
+       joins blocks with a '---' rule.
     """
     blocks: list[list[str]] = []
     current: list[str] = []
@@ -123,22 +139,63 @@ def reformat_output(raw_text: str) -> str:
 
     blocks.sort(key=block_sort_key)
 
-    # Ignore UNKNOWN_SPEC-only blocks from test files: these are intentional
-    # tests for unrecognised specs (e.g. the "// Unrecognized" section in
-    # _testlimitedcapi/unicode.c).  A block qualifies for suppression when:
-    #   - its loc: path contains "test", AND
-    #   - every error line is UNKNOWN_SPEC or MISSING_ARG (no real MISMATCH).
+    # Ignore UNKNOWN_SPEC blocks from explicitly listed test files: these are
+    # intentional tests for unrecognised specs (e.g. the "// Unrecognized"
+    # section in _testlimitedcapi/unicode.c).  A block qualifies for
+    # suppression when:
+    #   - the block contains an UNKNOWN_SPEC diagnostic, AND
+    #   - loc: path is a key in the exception_lines dict, AND
+    #   - the source line at the reported location matches one of the
+    #     expected strings for that file.
     def is_ignorable_test_unknown(block):
-        loc_in_test = any(
-            line.startswith("loc:") and "test" in line for line in block
-        )
-        if not loc_in_test:
+        if not any("UNKNOWN_SPEC" in line for line in block):
             return False
-        has_unknown = any("UNKNOWN_SPEC" in line for line in block)
-        has_real_mismatch = any(
-            "  MISMATCH" in line or "SURPLUS" in line for line in block
+
+        loc_line = next(
+            (line for line in block if line.startswith("loc:")), None
         )
-        return has_unknown and not has_real_mismatch
+        if loc_line is None:
+            return False
+
+        loc = loc_line.split(":", 1)[1].strip()
+        if ":" not in loc:
+            return False
+
+        path, _, lineno_str = loc.rpartition(":")
+
+        try:
+            lineno = int(lineno_str)
+        except ValueError:
+            return False
+
+        exception_lines = {
+            "Modules/_testlimitedcapi/unicode.c": [
+                'CHECK_FORMAT_2("%u %? %u", NULL, 1, 2);',
+            ]
+        }
+
+        if path not in exception_lines:
+            return False
+
+        # Try to find the source file relative to the repo root
+        src_path = Path(path)
+        if not src_path.is_absolute():
+            # The loc path is workspace-relative; resolve from repo root
+            src_path = Path(__file__).parent.parent.parent / path
+        if not src_path.exists():
+            return False
+
+        try:
+            src_lines = src_path.read_text(errors="replace").splitlines()
+        except OSError:
+            return False
+
+        if lineno < 1 or lineno > len(src_lines):
+            return False
+
+        src_line = src_lines[lineno - 1].strip()
+
+        return src_line in exception_lines[path]
 
     blocks = [b for b in blocks if not is_ignorable_test_unknown(b)]
 
@@ -332,27 +389,33 @@ def main() -> None:
         suffix = f"_{target}" if target else ""
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         output_path = REPORTS_DIR / f"py_format_report{suffix}.txt"
-    output_path.write_text(reformat_output(result_text))
+    report_text = reformat_output(result_text)
+    output_path.write_text(report_text)
 
-    # Summary (count from raw [py-fmt] lines before reformatting)
-    lines = result_text.splitlines()
-    call_sites = sum(1 for line in lines if line.startswith(PREFIX + " func:"))
+    # Summary (count from reformatted output to reflect actual reported issues)
+    report_lines = report_text.splitlines()
+    call_sites = sum(
+        1
+        for line in report_lines
+        if line.startswith("Error ") or line.startswith("Call site ")
+    )
     mismatches = sum(
         1
-        for line in lines
+        for line in report_lines
         if " MISMATCH" in line
         or " MISSING_ARG" in line
         or " SURPLUS" in line
         or " UNKNOWN_SPEC" in line
     )
-    fixed_fmts = sum(1 for line in lines if "hint:" in line)
+    hints = sum(1 for line in report_lines if "hint:" in line)
     mode = "all call site(s)" if args.verbose else "error only"
     print(f"\nDone ({mode}).")
     print(f"  {call_sites} call site(s) with issues reported.")
     print(f"  {mismatches} mismatch/missing/surplus argument(s).")
-    if fixed_fmts:
+    print(report_text)
+    if hints:
         print(
-            f"  {fixed_fmts} auto-correctable format string(s) (see 'hint:' lines)."
+            f"  {hints} auto-correctable format string(s) (see 'hint:' lines)."
         )
     print(f"Results written to: {output_path}")
 

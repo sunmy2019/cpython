@@ -54,7 +54,7 @@ python3 Tools/py-format-checker/run_checker.py [output_file] [--jobs N]
 | Flag              | Default                                   | Description                                       |
 | ----------------- | ----------------------------------------- | ------------------------------------------------- |
 | `output_file`     | `reports/py_format_report[_<target>].txt` | Output file (auto-named by target)                |
-| `--jobs N`        | `cpu_count / 2`                           | Parallel workers                                  |
+| `--jobs N`        | `cpu_count`                               | Parallel workers                                  |
 | `--plugin PATH`   | `build/PyFormatChecker.so`                | Override plugin path                              |
 | `--db PATH`       | `compile_commands.json`                   | Override compilation database                     |
 | `--target TRIPLE` | host                                      | Clang target triple for type-size checks          |
@@ -62,10 +62,10 @@ python3 Tools/py-format-checker/run_checker.py [output_file] [--jobs N]
 
 ### Environment variables
 
-| Variable                  | Default | Description                                                                                                                                |
-| ------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `PY_FMT_ERROR_ONLY`       | `1`     | Set to `0` to print *all* call-sites, not just those with at least one mismatch                                                            |
-| `PY_FMT_CHECK_SIGNEDNESS` | `1`     | Set to `0` to disable strict signedness checks for integer specifiers (treat signed and unsigned integers of the same width as equivalent) |
+| Variable                     | Default    | Description                                                                                                                                                             |
+| ---------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PY_FMT_ERROR_ONLY`          | `1`        | Set to `0` to print *all* call-sites, not just those with at least one mismatch                                                                                         |
+| `PY_FMT_INTEGRAL_CHECK_MODE` | `standard` | Integer width/sign checking: `off` — accept any integer; `standard` — bit-width must match (C99, signedness ignored); `full` — both bit-width and signedness must match |
 
 ### Possible per-argument statuses
 
@@ -79,12 +79,13 @@ python3 Tools/py-format-checker/run_checker.py [output_file] [--jobs N]
 
 `<sentinel>` is either a standard C type (e.g. `long`, `const char *`) or a special placeholder like `<PyObject*>` or `<any-int>` that the plugin understands and checks for. See the source for the full list of supported sentinels and their checks.
 
-### `fixed fmt` suggestion
+### `hint` suggestion
 
 When a mismatch involves an integer conversion spec (`%d`, `%i`, `%u`, `%o`,
-`%x`, `%X`) the plugin emits a `fixed fmt:` line showing the corrected
+`%x`, `%X`) the plugin emits a `hint:` line showing the corrected
 format string with the proper length modifier (e.g. `%d` → `%zd` for a
-`Py_ssize_t` argument).
+`Py_ssize_t` argument). In `full` mode the conversion character is also
+corrected for signedness (e.g. `%d` → `%u` for an unsigned type).
 
 ## Cross-checking 32-bit targets
 
@@ -130,9 +131,7 @@ filename filter so calls from unrelated translation units are not matched.
 | ------------------------------------------- | ---------- | ------------------ |
 | `_PyErr_FormatNote`                         | 0          | —                  |
 | `PyUnicode_FromFormat`                      | 0          | —                  |
-| `PyUnicode_FromFormatV`                     | 0          | —                  |
 | `PySys_FormatStdout` / `PySys_FormatStderr` | 0          | —                  |
-| `PySys_WriteStdout` / `PySys_WriteStderr`   | 0          | —                  |
 | `PyErr_Format`                              | 1          | —                  |
 | `_PyErr_FormatFromCause`                    | 1          | —                  |
 | `_Py_FatalErrorFormat`                      | 1          | —                  |
@@ -142,9 +141,7 @@ filename filter so calls from unrelated translation units are not matched.
 | `_abiinfo_raise`                            | 1          | `modsupport.c`     |
 | `_PyTokenizer_syntaxerror`                  | 1          | —                  |
 | `_PyErr_Format`                             | 2          | —                  |
-| `_PyErr_FormatV`                            | 2          | —                  |
 | `_PyErr_FormatFromCauseTstate`              | 2          | —                  |
-| `PyErr_FormatV`                             | 2          | —                  |
 | `PyErr_WarnFormat`                          | 2          | —                  |
 | `PyErr_ResourceWarning`                     | 2          | —                  |
 | `_PyCompile_Error` / `_PyCompile_Warn`      | 2          | —                  |
@@ -184,6 +181,14 @@ An argument satisfies `<PyTypeObject*>` if any of the following hold:
 
 - Its pointee typedef name is `PyTypeObject` (covers all public API types before canonical unwrapping).
 - Its pointee struct's name is `_typeobject`.
+
+## Enum type handling
+
+C enum types have an implementation-defined underlying integer type. The
+plugin resolves any enum argument to its compiler-chosen underlying integer
+type before performing width and signedness checks, so e.g. an `enum` backed
+by `unsigned long` is correctly matched against `%lu` and not `%u`. Incomplete
+enums (no underlying type yet) are accepted to avoid false positives.
 
 ## Adding a new format function
 

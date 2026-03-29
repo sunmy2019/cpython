@@ -44,6 +44,16 @@
 using namespace clang;
 
 // --------------------------------------------------------------------------
+// Integer type-checking strictness (PY_FMT_INTEGRAL_CHECK_MODE):
+//   off      – accept any integer for integer specs; no width/sign check.
+//   standard – enforce bit-width only (C99: integer promotions mask sign;
+//              useful when the codebase freely mixes int/unsigned).
+//   full     – enforce both bit-width and signedness.
+// Default: off.
+// --------------------------------------------------------------------------
+enum class IntegralCheckMode { Off, Standard, Full };
+
+// --------------------------------------------------------------------------
 // Table: function-name -> {0-based format-string arg index, optional
 //   filename substring filter}.  The filter (if non-empty) is matched
 //   against the source-file path of the call-site; calls in other files
@@ -99,13 +109,19 @@ static const std::map<std::string, FmtFuncInfo> kFormatFuncs = {
 // consume one argument; %V consumes two; %% consumes none.
 //
 // Sentinels:
-//   <any-int>       any integer type (for %c, %x, %X)
-//   <signed-int>    signed integer (for %d, %i and length variants)
-//   <unsigned-int>  unsigned integer (for %u and length variants)
-//   <char-ptr>      char * or const char * (for %s)
-//   <any-ptr>       any pointer (for %p)
-//   <PyObject*>     PyObject * or any Py*-typed pointer (%R %S %A %U %T %N)
-//   <unknown>       unrecognised spec – arg is counted but not checked
+//   <any-int>              any integer type (for %c only)
+//   <int> / <uint>         signed / unsigned int        (%d %i / %u %x %X %o)
+//   <long> / <ulong>       signed / unsigned long       (%ld / %lu %lx %lX %lo)
+//   <longlong> / <ulonglong>  …long long               (%lld / %llu %llx …)
+//   <ssize_t> / <size_t>   Py_ssize_t / size_t          (%zd / %zu)
+//   <intmax_t> / <uintmax_t>  intmax_t / uintmax_t      (%jd / %ju)
+//   <ptrdiff_t>            ptrdiff_t                    (%td)
+//   <char-ptr>             char * or const char *       (%s)
+//   <wchar-ptr>            wchar_t *                    (%ls, second arg of
+//   %lV) <any-ptr>              any pointer                  (%p) <PyObject*>
+//   PyObject * or any Py*-typed pointer (%R %S %A %U %T %#T) <PyTypeObject*>
+//   PyTypeObject * specifically  (%N %#N) <unknown>              unrecognised
+//   spec – arg is counted but not checked
 struct FmtArgSpec {
   std::string text;                      // textual token, e.g. "%.200s"
   std::vector<std::string> expectedArgs; // one sentinel per consumed arg
@@ -353,11 +369,13 @@ static bool isPyTypeObjectPtr(QualType qt) {
 }
 
 // Check whether an actual call-site type satisfies an expected sentinel.
-// Width-specific sentinels (<int>, <uint>, <long>, etc.) compare the actual
-// type's bit-width against the expected C type so that e.g. passing an
-// unsigned long long to %u is flagged as a mismatch.
+// Width-specific sentinels (<int>, <uint>, <long>, etc.) are checked against
+// the actual type according to 'checkMode':
+//   Off      – any integer type is accepted.
+//   Standard – bit-width must match; signedness is ignored.
+//   Full     – both bit-width and signedness must match.
 static bool typeMatches(QualType actual, const std::string &sentinel,
-                        bool enforceSignedness, ASTContext &Ctx) {
+                        IntegralCheckMode checkMode, ASTContext &Ctx) {
   QualType can = actual.getCanonicalType();
 
   if (sentinel == "<any-ptr>")
@@ -384,22 +402,32 @@ static bool typeMatches(QualType actual, const std::string &sentinel,
     return pointee.getCanonicalType()->isWideCharType();
   }
 
-  // Width-specific integer sentinels: the actual type must be an integer
-  // type whose bit-width matches the reference C type for the sentinel,
-  // and its signedness must also match (signed vs unsigned).  Previously
-  // signedness was ignored; require it now so e.g. passing an unsigned
-  // type to a signed-int spec is flagged.
+  // Enum types: resolve to the compiler-chosen underlying integer type before
+  // doing width/signedness checks.  In C the underlying type is implementation-
+  // defined, so checking the enum type directly would give unreliable results.
+  // If the enum is incomplete (no underlying type yet), accept to avoid false
+  // positives.
+  if (const auto *ET = can->getAs<EnumType>()) {
+    QualType underlying = ET->getDecl()->getIntegerType();
+    if (!underlying.isNull())
+      return typeMatches(underlying, sentinel, checkMode, Ctx);
+    return true; // incomplete enum – accept to avoid false positives
+  }
+
+  // Width-specific integer sentinels.
   if (!can->isIntegerType())
     return false;
+  if (checkMode == IntegralCheckMode::Off)
+    return true; // accept any integer regardless of width/sign
   uint64_t actualBits = Ctx.getTypeSize(actual);
   bool actualUnsigned = actual.getCanonicalType()->isUnsignedIntegerType();
 
   auto matchWidthAndSign = [&](uint64_t expectBits, bool expectUnsigned) {
     if (actualBits != expectBits)
       return false;
-    if (!enforceSignedness)
-      return true;
-    return actualUnsigned == expectUnsigned;
+    if (checkMode == IntegralCheckMode::Standard)
+      return true;                           // width matches; ignore signedness
+    return actualUnsigned == expectUnsigned; // Full: also check sign
   };
 
   if (sentinel == "<int>")
@@ -443,7 +471,15 @@ static std::string suggestLenMod(QualType actual, ASTContext &Ctx) {
     if (name == "intmax_t" || name == "uintmax_t")
       return "j";
   }
+  // Resolve enum types to their underlying integer type so that e.g. an enum
+  // backed by `long` produces "l" rather than the empty modifier.
   QualType canon = actual.getCanonicalType();
+  if (const auto *ET = canon->getAs<EnumType>()) {
+    QualType underlying = ET->getDecl()->getIntegerType();
+    if (!underlying.isNull())
+      return suggestLenMod(underlying, Ctx);
+    return ""; // incomplete enum – fall back to no modifier
+  }
   if (const auto *BT = canon->getAs<BuiltinType>()) {
     switch (BT->getKind()) {
     case BuiltinType::Int:
@@ -470,7 +506,7 @@ static std::string suggestLenMod(QualType actual, ASTContext &Ctx) {
 // the classic "%ull" pitfall where "%u" + "ll" is parsed but fixing "%u"
 // to "%llu" would produce "%llull").
 static std::string fixedSpec(const std::string &specText, QualType actual,
-                             ASTContext &Ctx) {
+                             IntegralCheckMode checkMode, ASTContext &Ctx) {
   if (specText.size() < 2 || specText[0] != '%')
     return specText;
   char specChar = specText.back();
@@ -496,16 +532,18 @@ static std::string fixedSpec(const std::string &specText, QualType actual,
   std::string purePrefix = specText.substr(1, lenStart - 1);
   std::string newMod = suggestLenMod(actual, Ctx);
 
-  // Correct the signedness of the conversion character: if the actual type
-  // is unsigned and the spec is 'd'/'i', use 'u' instead; if actual is
-  // signed and spec is 'u', use 'd'.  Leave 'x'/'X'/'o' alone (hex/octal
-  // are conventionally acceptable for both signed and unsigned values).
+  // In Full mode, also correct the signedness of the conversion character:
+  // unsigned actual → 'u'; signed actual → 'd'/'i'.  Leave 'x'/'X'/'o'
+  // alone (hex/octal are conventionally acceptable for either signedness).
+  // In Standard mode only the length modifier is corrected.
   char newSpecChar = specChar;
-  bool actualUnsigned = actual.getCanonicalType()->isUnsignedIntegerType();
-  if (actualUnsigned && (specChar == 'd' || specChar == 'i'))
-    newSpecChar = 'u';
-  else if (!actualUnsigned && specChar == 'u')
-    newSpecChar = 'd';
+  if (checkMode == IntegralCheckMode::Full) {
+    bool actualUnsigned = actual.getCanonicalType()->isUnsignedIntegerType();
+    if (actualUnsigned && (specChar == 'd' || specChar == 'i'))
+      newSpecChar = 'u';
+    else if (!actualUnsigned && specChar == 'u')
+      newSpecChar = 'd';
+  }
 
   return "%" + purePrefix + newMod + newSpecChar;
 }
@@ -516,11 +554,10 @@ static std::string fixedSpec(const std::string &specText, QualType actual,
 class PyFmtVisitor : public RecursiveASTVisitor<PyFmtVisitor> {
   ASTContext &Ctx;
   PrintingPolicy PP;
-  unsigned DiagMismatch;  // cached Clang warning ID
-  bool ErrorOnly;         // suppress all-ok call-sites when true
-                          // (PY_FMT_ERROR_ONLY)
-  bool EnforceSignedness; // whether to enforce signedness for integer sentinels
-                          // (PY_FMT_CHECK_SIGNEDNESS)
+  unsigned DiagMismatch; // cached Clang warning ID
+  bool ErrorOnly;        // suppress all-ok call-sites (PY_FMT_ERROR_ONLY)
+  IntegralCheckMode
+      IntegralMode; // integer width/sign checking (PY_FMT_INTEGRAL_CHECK_MODE)
   // Deduplication: when a format call lives inside a macro body it is
   // visited once per expansion.  We keep the spelling location (inside the
   // macro definition) + function name as a key and skip all but the first.
@@ -538,10 +575,17 @@ public:
     const char *env = std::getenv("PY_FMT_ERROR_ONLY");
     ErrorOnly = (env == nullptr || llvm::StringRef(env) != "0");
 
-    // PY_FMT_CHECK_SIGNEDNESS=0 disables strict signedness checks for
-    // integer sentinels. Default (unset or !="0") enforces signedness.
-    const char *senv = std::getenv("PY_FMT_CHECK_SIGNEDNESS");
-    EnforceSignedness = (senv == nullptr || llvm::StringRef(senv) != "0");
+    // PY_FMT_INTEGRAL_CHECK_MODE controls integer width/sign checking.
+    //   off                – accept any integer; no width/sign check.
+    //   standard (default) – width must match; signedness ignored.
+    //   full               – both width and signedness must match.
+    const char *ienv = std::getenv("PY_FMT_INTEGRAL_CHECK_MODE");
+    llvm::StringRef imode(ienv ? ienv : "");
+    IntegralMode = IntegralCheckMode::Standard;
+    if (imode == "full")
+      IntegralMode = IntegralCheckMode::Full;
+    else if (imode == "off")
+      IntegralMode = IntegralCheckMode::Off;
   }
 
   bool VisitCallExpr(CallExpr *CE) {
@@ -667,7 +711,7 @@ public:
           continue;
         }
 
-        bool ok = typeMatches(actual, sentinel, EnforceSignedness, Ctx);
+        bool ok = typeMatches(actual, sentinel, IntegralMode, Ctx);
 
         if (ok) {
           out << "[py-fmt] arg[" << argNum << "] " << padSpec(fa.text)
@@ -694,7 +738,7 @@ public:
             bool malformed = afterSpec < fmtStr.size() &&
                              std::isalnum((unsigned char)fmtStr[afterSpec]);
             if (!malformed) {
-              std::string fixed = fixedSpec(fa.text, actual, Ctx);
+              std::string fixed = fixedSpec(fa.text, actual, IntegralMode, Ctx);
               if (fixed != fa.text)
                 specFixes.push_back({fa.fmtOffset, fa.text.size(), fixed});
             }
